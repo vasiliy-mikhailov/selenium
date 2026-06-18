@@ -95,13 +95,13 @@ pub fn create_path_if_not_exists(path: &Path) -> Result<(), Error> {
 pub fn check_path_traversal(entry_path: &Path) -> Result<(), Error> {
     if entry_path.as_os_str().is_empty()
         || entry_path.components().any(|c| {
-        matches!(
-            c,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        )
-    })
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
     {
         return Err(anyhow!("Unsafe entry (path traversal): {:?}", entry_path));
     }
@@ -806,5 +806,4 @@ mod tests {
         assert!(err.to_string().contains("Unsafe entry (path traversal)"));
         assert!(!escape_path.exists());
     }
-
 }
