@@ -41,7 +41,8 @@ Shared/high-risk areas:
 The `.local/` directory (gitignored) is available for generated artifacts or temporary files.
 - When building in a git worktree, put Bazel's output base inside the worktree so it is reclaimed when
   the worktree is removed: add `startup --output_base=.local/bazel-out` to the worktree's
-  `.bazelrc.local`, or pass `--output_base=.local/bazel-out`. By default Bazel keys the output base on
+  `.bazelrc.local`, or pass it as a startup option before the command
+  (`bazel --output_base=.local/bazel-out build //...`). By default Bazel keys the output base on
   the checkout path and never deletes it when the worktree is removed, leaking several GB per discarded
   worktree. See "Using Worktrees" in README.md for the shared cache setup.
 
