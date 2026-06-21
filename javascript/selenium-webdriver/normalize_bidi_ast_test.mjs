@@ -15,11 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Unit tests for the BiDi AST normalizer. Runnable standalone with
-// `node --test normalize_bidi_ast_test.mjs`; adapt describe/it to the
-// repo's mocha + Bazel harness when wiring into CI.
-
-// Mocha test; `describe`/`it` are mocha globals.
+// Unit tests for the BiDi AST normalizer transforms.
+// Mocha test; `describe`/`it` are mocha globals (run via the Bazel mocha target).
 import assert from 'node:assert/strict'
 import {
   normalizeAst,

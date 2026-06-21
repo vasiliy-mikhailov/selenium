@@ -15,12 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Runnable standalone: `node --test project_bidi_schema_test.mjs`.
-// In Bazel this becomes a mocha/js_test over the committed fixtures below; the
-// completeness test is the "compare input to output independent of generation"
-// gate — it re-derives expected methods from the raw AST, not from the model.
-
-// Mocha test; `describe`/`it` are mocha globals.
+// Unit tests for the schema projector + validators.
+// Mocha test; `describe`/`it` are mocha globals (run via the Bazel mocha target).
+// The completeness test is the "compare input to output independent of
+// generation" gate — it re-derives expected methods from the raw AST, not the model.
 import assert from 'node:assert/strict'
 import { projectSchema, checkSchema, checkCompleteness } from './project_bidi_schema.mjs'
 

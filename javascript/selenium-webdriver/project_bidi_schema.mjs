@@ -70,9 +70,13 @@ const typeList = (t) => (Array.isArray(t) ? t : t === undefined || t === null ? 
 const isLiteral = (e) => e && typeof e === 'object' && e.Type === 'literal'
 const isRef = (e) => e && typeof e === 'object' && e.Type === 'group' && typeof e.Value === 'string'
 
+// A `null` keyword or a `nil` prelude ref in a union means the value may be null.
+const isNullAlt = (e) =>
+  e === 'null' || (e && typeof e === 'object' && e.Type === 'group' && PRELUDE[e.Value] === 'null')
+
 function projectRef(type) {
   const all = typeList(type)
-  const entries = all.filter((e) => e !== 'null')
+  const entries = all.filter((e) => !isNullAlt(e))
   const node =
     entries.length > 1
       ? entries.every(isLiteral)
