@@ -25,17 +25,18 @@
  * enum drift, the class of bug the structural validators (checkSchema /
  * checkCompleteness) cannot see.
  *
- * Mocha test; `describe`/`it` are mocha globals. It runs against the generated
- * AST + model artifacts (declared as Bazel data, read relative to the package
- * dir via chdir). Intentional differences live in KNOWN_DIFFERENCES with a
- * reason; the check flags an allowlist entry as stale once the difference
- * disappears, so the list cannot silently rot.
+ * Mocha test; `describe`/`it` are mocha globals. It runs against the *generated*
+ * schema artifact (and the AST, for cddl2ts) declared as Bazel data and read
+ * relative to the package dir via chdir — so the test depends on, and therefore
+ * exercises, the schema-generation CLI rather than re-projecting in-process.
+ * Intentional differences live in KNOWN_DIFFERENCES with a reason; the check
+ * flags an allowlist entry as stale once the difference disappears, so the list
+ * cannot silently rot.
  */
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { transform } from 'cddl2ts'
-import { projectSchema } from './project_bidi_schema.mjs'
 
 // Intentional, reviewed divergences from cddl2ts, keyed by schema type name.
 // `fields` are field names cddl2ts has that we deliberately do not (because we
@@ -136,10 +137,6 @@ function parseCddl2ts(ts) {
     const { body } = balancedBody(ts, m.index + m[0].length)
     interfaces[m[1]] = topLevelFields(body)
   }
-  const enums = {}
-  for (const m of ts.matchAll(/export type (\w+) = ((?:\s*"[^"]*"\s*\|?)+);/g)) {
-    enums[m[1]] = new Set([...m[2].matchAll(/"([^"]*)"/g)].map((x) => x[1]))
-  }
   const aliases = {} // name → raw RHS expression (for union/intersection types)
   for (const m of ts.matchAll(/export type (\w+) = /g)) {
     let i = m.index + m[0].length
@@ -151,6 +148,13 @@ function parseCddl2ts(ts) {
       i++
     }
     aliases[m[1]] = ts.slice(start, i)
+  }
+  // Enums are the aliases whose RHS is a pure string-literal union. Derived from
+  // the parsed aliases (linear) rather than a nested-quantifier regex.
+  const enums = {}
+  for (const [name, expr] of Object.entries(aliases)) {
+    const parts = splitTopLevel(expr, '|').map((p) => p.trim())
+    if (parts.length && parts.every((p) => /^"[^"]*"$/.test(p))) enums[name] = new Set(parts.map((p) => p.slice(1, -1)))
   }
   return { interfaces, enums, aliases }
 }
@@ -221,9 +225,13 @@ function schemaTypeFields(name, types, fields = new Set(), seen = new Set()) {
   return fields
 }
 
-/** Returns an array of difference strings; empty means the schema matches cddl2ts. */
-function diffAgainstCddl2ts(ast, model) {
-  const schema = projectSchema(ast, model)
+/**
+ * Compare the generated schema against the cddl2ts oracle.
+ * @param {object} schema The generated schema artifact (`{commands, events, types}`).
+ * @param {object[]} ast The parsed CDDL AST (fed to cddl2ts).
+ * @returns {string[]} Difference messages; empty means the schema matches cddl2ts.
+ */
+function diffAgainstCddl2ts(schema, ast) {
   const parsed = parseCddl2ts(transform(ast))
   const { interfaces, enums, aliases } = parsed
   const errors = []
@@ -282,8 +290,8 @@ function diffAgainstCddl2ts(ast, model) {
 
 describe('BiDi schema vs cddl2ts oracle', () => {
   it('matches cddl2ts on record fields, field types, enum values, and union members', () => {
+    const schema = JSON.parse(readFileSync('create-bidi-src_schema.json', 'utf8'))
     const ast = JSON.parse(readFileSync('create-bidi-src_ast.json', 'utf8'))
-    const model = JSON.parse(readFileSync('create-bidi-src_model.json', 'utf8'))
-    assert.deepEqual(diffAgainstCddl2ts(ast, model), [])
+    assert.deepEqual(diffAgainstCddl2ts(schema, ast), [])
   })
 })

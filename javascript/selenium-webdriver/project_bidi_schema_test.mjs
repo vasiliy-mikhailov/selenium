@@ -127,4 +127,24 @@ describe('checkSchema (referential integrity)', () => {
     }
     assert.deepEqual(checkSchema(schema), ['x.T.a: unresolved type x.Missing'])
   })
+
+  it('catches an unresolved ref inside an alias', () => {
+    const schema = {
+      schemaVersion: 1,
+      commands: [],
+      events: [],
+      types: { 'x.A': { kind: 'alias', type: { ref: 'x.Missing' } } },
+    }
+    assert.deepEqual(checkSchema(schema), ['x.A: unresolved type x.Missing'])
+  })
+
+  it('catches an unresolved ref inside a record map', () => {
+    const schema = {
+      schemaVersion: 1,
+      commands: [],
+      events: [],
+      types: { 'x.T': { kind: 'record', fields: [], map: { ref: 'x.Missing' } } },
+    }
+    assert.deepEqual(checkSchema(schema), ['x.T.*: unresolved type x.Missing'])
+  })
 })

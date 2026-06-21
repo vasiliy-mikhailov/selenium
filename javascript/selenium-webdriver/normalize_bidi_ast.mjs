@@ -148,6 +148,8 @@ function eachPropertyDeep(properties, fn) {
  * Rewrite fields whose type is a union of >= 2 string literals into a reference
  * to a synthetic enum def, and append those enum defs. Single-literal fields
  * (discriminators) are left untouched. Returns a new AST array.
+ * @param {object[]} ast The AST to transform.
+ * @returns {object[]} A new AST array with inline enums hoisted to named defs.
  */
 export function hoistInlineEnums(ast) {
   const out = structuredClone(ast)
@@ -186,6 +188,8 @@ export function hoistInlineEnums(ast) {
  * top-level def + a reference, so every structured type in the artifact is a
  * named ref (no inline records left for consumers to special-case). Uses a
  * worklist so records nested inside hoisted records are also lifted.
+ * @param {object[]} ast The AST to transform.
+ * @returns {object[]} A new AST array with inline records hoisted to named defs.
  */
 export function hoistInlineRecords(ast) {
   const out = structuredClone(ast)
@@ -297,6 +301,8 @@ function variantRecord(commonFields, entry, defMap, index) {
  * self-contained variant records. Records that are already a `variable` union
  * (a top-level union of group refs) are left as the canonical target. Returns a
  * new AST array.
+ * @param {object[]} ast The AST to transform.
+ * @returns {object[]} A new AST array with variant-union params canonicalized.
  */
 export function canonicalizeVariantParams(ast) {
   const out = structuredClone(ast)
@@ -365,6 +371,8 @@ function isRecordGroup(def) {
  * marker inlines its `* text => any` wildcard, which the projector reads as
  * `extensible`, so extensibility propagates for free. Spreads of unions or the
  * dispatch hierarchy are left as-is. Recursion is memoized and cycle-guarded.
+ * @param {object[]} ast The AST to transform.
+ * @returns {object[]} A new AST array with group composition flattened.
  */
 export function flattenGroupComposition(ast) {
   const out = structuredClone(ast)
@@ -407,6 +415,8 @@ export function flattenGroupComposition(ast) {
  * input concatenates local + remote specs that both define shared types. This
  * matches `buildModel`'s `buildDefMap` ("first wins") so the normalized artifact
  * carries one def per name.
+ * @param {object[]} ast The AST to dedupe.
+ * @returns {object[]} A new AST array with duplicate-named defs removed (first wins).
  */
 export function dedupeDefs(ast) {
   const seen = new Set()
@@ -421,7 +431,11 @@ export function dedupeDefs(ast) {
   return out
 }
 
-/** Apply all normalizations. Pure: does not mutate `ast`. */
+/**
+ * Apply all normalizations to a raw BiDi AST. Pure — does not mutate `ast`.
+ * @param {object[]} ast The parsed CDDL AST (array of definition nodes).
+ * @returns {object[]} A new, normalized AST array.
+ */
 export function normalizeAst(ast) {
   let result = dedupeDefs(ast)
   result = hoistInlineEnums(result)
@@ -429,37 +443,4 @@ export function normalizeAst(ast) {
   result = hoistInlineRecords(result)
   result = flattenGroupComposition(result)
   return result
-}
-
-// ============================================================
-// CLI: ast → normalized ast
-//   node normalize_bidi_ast.mjs --ast <in.json> --dump-normalized-ast <out.json>
-// ============================================================
-
-async function main() {
-  const { parseArgs } = await import('node:util')
-  const { readFileSync, writeFileSync } = await import('node:fs')
-  const { resolve } = await import('node:path')
-
-  const { values: args } = parseArgs({
-    options: { ast: { type: 'string' }, 'dump-normalized-ast': { type: 'string' } },
-  })
-  if (!args.ast || !args['dump-normalized-ast']) {
-    console.error('Usage: normalize_bidi_ast.mjs --ast <in.json> --dump-normalized-ast <out.json>')
-    process.exit(1)
-  }
-
-  const ast = JSON.parse(readFileSync(resolve(args.ast), 'utf8'))
-  const normalized = normalizeAst(ast)
-  writeFileSync(resolve(args['dump-normalized-ast']), JSON.stringify(normalized, null, 2) + '\n', 'utf8')
-  console.log(`  ${ast.length} defs → ${normalized.length} (normalized) → ${args['dump-normalized-ast']}`)
-}
-
-// `import.meta.main` is true only when this file is the entry point (Node >= 24),
-// so importing the transforms for tests does not trigger the CLI.
-if (import.meta.main) {
-  main().catch((err) => {
-    console.error(err)
-    process.exit(1)
-  })
 }

@@ -53,7 +53,7 @@ mocha_test(
         "project_bidi_schema.mjs",
         "project_bidi_schema_test.mjs",
         ":create-bidi-src_ast",
-        ":create-bidi-src_json",
+        ":create-bidi-src_schema",
         ":node_modules/cddl2ts",
         ":node_modules/mocha",
     ],

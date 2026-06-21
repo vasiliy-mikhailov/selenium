@@ -23,19 +23,19 @@
  *
  *   type node:  { kind: 'record', fields: [field] }
  *             | { kind: 'enum',   values: [string] }
- *             | { kind: 'union',  variants: [ref], oneOf?: [string] }
+ *             | { kind: 'union',  variants: [ref] }
  *             | { kind: 'alias',  type }
  *   field:      { name, wire, required, type }
  *   type ref:   { primitive } | { const } | { ref } | { enum } | { list } | { map, extensible? } | { union }
  */
 
+import { pathToFileURL } from 'node:url'
 import { normalizeAst } from './normalize_bidi_ast.mjs'
 
-// Prose-only "exactly one of" constraints the CDDL cannot express. In practice
-// every mutual-exclusivity case in the spec is a CDDL choice (→ a `union` here,
-// e.g. session.unsubscribe), and a scan of all spec comments finds no prose-only
-// constraint — so this is empty. Keyed by type name; validated by checkSchema().
-const ONE_OF = {}
+// Note: the CDDL has no prose-only "exactly one of" constraints — every
+// mutual-exclusivity case (e.g. session.unsubscribe) is a CDDL choice, which the
+// normalizer turns into a `union`. A scan of all spec comments confirms none, so
+// no separate constraint representation is carried.
 
 // Events that parse into the AST but are not wired into the model because the
 // upstream bluetooth spec does not fully define them. This is an external spec
@@ -107,11 +107,7 @@ function projectType(def) {
   if (def.Type === 'variable') {
     const pt = def.PropertyType ?? []
     if (pt.length && pt.every(isLiteral)) return { kind: 'enum', values: pt.map((e) => e.Value) }
-    if (pt.length > 1 && pt.every(isRef)) {
-      const node = { kind: 'union', variants: pt.map((e) => e.Value) }
-      if (ONE_OF[def.Name]) node.oneOf = ONE_OF[def.Name]
-      return node
-    }
+    if (pt.length > 1 && pt.every(isRef)) return { kind: 'union', variants: pt.map((e) => e.Value) }
     return { kind: 'alias', type: projectRef(def.PropertyType) }
   }
   return projectRecord(def)
@@ -146,7 +142,12 @@ function projectRecord(def) {
 
 const typeRef = (name) => (name ? { ref: name } : null)
 
-/** Build the flat schema from the raw AST and the existing command/event model. */
+/**
+ * Build the flat, binding-neutral schema from the raw AST and command/event model.
+ * @param {object[]} ast The parsed CDDL AST (array of definition nodes).
+ * @param {object} model The binding-neutral command/event model (per-domain).
+ * @returns {{schemaVersion: number, commands: object[], events: object[], types: object}} The schema.
+ */
 export function projectSchema(ast, model) {
   const types = {}
   for (const def of normalizeAst(ast)) if (def?.Name) types[def.Name] = projectType(def)
@@ -163,7 +164,13 @@ export function projectSchema(ast, model) {
   return { schemaVersion: 1, commands, events, types }
 }
 
-/** Fail-closed validation: every ref resolves, and every ONE_OF entry is real. */
+/**
+ * Fail-closed validation: every type reference in the schema resolves to a
+ * defined type — across command/event params and results, record fields, record
+ * maps, union variants, and aliases.
+ * @param {object} schema The projected schema (`{commands, events, types}`).
+ * @returns {string[]} One message per unresolved reference; empty when valid.
+ */
 export function checkSchema(schema) {
   const errors = []
   const has = (name) => Object.hasOwn(schema.types, name)
@@ -181,22 +188,24 @@ export function checkSchema(schema) {
               : node.record
                 ? node.record.flatMap((f) => refsIn(f.type))
                 : []
+  const report = (where, node) => {
+    for (const r of refsIn(node)) if (!has(r)) errors.push(`${where}: unresolved type ${r}`)
+  }
 
   for (const c of [...schema.commands, ...schema.events]) {
-    for (const r of [...refsIn(c.params), ...refsIn(c.result ?? null)])
-      if (!has(r)) errors.push(`${c.method}: unresolved type ${r}`)
+    report(c.method, c.params)
+    report(c.method, c.result ?? null)
   }
   for (const [name, node] of Object.entries(schema.types)) {
-    if (node.kind === 'record')
-      for (const f of node.fields)
-        for (const r of refsIn(f.type)) if (!has(r)) errors.push(`${name}.${f.name}: unresolved type ${r}`)
-    if (node.kind === 'union')
+    if (node.kind === 'record') {
+      for (const f of node.fields) report(`${name}.${f.name}`, f.type)
+      if (node.map) report(`${name}.*`, node.map)
+    } else if (node.kind === 'union') {
       for (const v of node.variants) if (!has(v)) errors.push(`${name}: unresolved variant ${v}`)
-    for (const field of node.oneOf ?? [])
-      if (node.kind === 'union' ? false : !node.fields?.some((f) => f.name === field))
-        errors.push(`oneOf(${name}): no such field ${field}`)
+    } else if (node.kind === 'alias') {
+      report(name, node.type)
+    }
   }
-  for (const name of Object.keys(ONE_OF)) if (!has(name)) errors.push(`oneOf: unknown type ${name}`)
   return errors
 }
 
@@ -246,7 +255,9 @@ async function main() {
   )
 }
 
-if (import.meta.main) {
+// Run main() when invoked as the entry module. Uses an argv comparison rather
+// than `import.meta.main`, which is only available on newer Node versions.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(err)
     process.exit(1)
@@ -259,6 +270,9 @@ if (import.meta.main) {
  * survived into the schema. This compares input to output without trusting the
  * generator, so a dropped command/event fails the build even if generation and
  * its own checkSchema agree. Run as a Bazel test over committed fixtures.
+ * @param {object[]} rawAst The parsed CDDL AST (pre-normalization).
+ * @param {object} schema The projected schema to check against.
+ * @returns {string[]} One message per dropped or stale-allowlisted method; empty when complete.
  */
 export function checkCompleteness(rawAst, schema) {
   const emitted = new Set([...schema.commands, ...schema.events].map((c) => c.method))
