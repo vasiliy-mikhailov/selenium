@@ -53,6 +53,14 @@ const UNION_DIFFERENCES = {
   Message: { fields: ['method', 'params'], reason: 'envelope composes EventData union' },
 }
 
+// Composed records (cddl2ts `Base & {...}` intersection aliases) whose field set
+// intentionally differs. The Command/Event protocol envelopes compose the
+// Command/Event data unions, whose method/params live on the leaf types here.
+const RECORD_ALIAS_DIFFERENCES = {
+  Command: { fields: ['method', 'params'], reason: 'envelope composes CommandData union' },
+  Event: { fields: ['method', 'params'], reason: 'envelope composes EventData union' },
+}
+
 /** dotted CDDL name → cddl2ts PascalCase name (mirrors normalizeDottedName). */
 function tsName(name) {
   return name
@@ -239,7 +247,25 @@ function diffAgainstCddl2ts(schema, ast) {
   for (const [name, node] of Object.entries(schema.types)) {
     if (node.kind === 'record') {
       const oracle = interfaces[tsName(name)]
-      if (!oracle) continue
+      if (!oracle) {
+        const alias = aliases[tsName(name)]
+        if (alias?.includes('&')) {
+          // A composed record cddl2ts emits as `Base & {...}` — field-compare it,
+          // so a dropped composition (e.g. an un-flattened base type) is caught.
+          const expected = expectedUnionFields(alias, parsed)
+          const mine = new Set(node.fields.map((f) => f.name))
+          const allow = new Set(RECORD_ALIAS_DIFFERENCES[name]?.fields ?? [])
+          const missing = [...expected].filter((f) => !mine.has(f) && !allow.has(f))
+          if (missing.length) errors.push(`${name}: composed record missing fields cddl2ts has: ${missing.join(', ')}`)
+        } else if (node.fields.length === 0 && !node.map && !node.extensible && alias) {
+          // A fieldless record where cddl2ts emits a list/union alias means the
+          // element type was dropped (e.g. a top-level `[*T]` or `a // b`).
+          errors.push(
+            `${name}: projected as an empty record but cddl2ts emits a type alias (dropped list/union element type)`,
+          )
+        }
+        continue
+      }
       const oracleNames = Object.keys(oracle)
       const mine = new Map(node.fields.map((f) => [f.name, f]))
       const allow = new Set(KNOWN_DIFFERENCES[name]?.fields ?? [])
@@ -278,6 +304,12 @@ function diffAgainstCddl2ts(schema, ast) {
       if (missing.length) errors.push(`${name}: union missing fields cddl2ts has: ${missing.join(', ')}`)
       if (extra.length) errors.push(`${name}: union has fields cddl2ts does not: ${extra.join(', ')}`)
       if (stale.length) errors.push(`${name}: stale UNION_DIFFERENCES (resolved, remove): ${stale.join(', ')}`)
+    } else if (node.kind === 'alias' && node.type?.list) {
+      // A list alias must correspond to a cddl2ts array; otherwise an element
+      // type was lost (the same class as the empty-record list bug).
+      const alias = aliases[tsName(name)]
+      if (alias !== undefined && !alias.includes('[]'))
+        errors.push(`${name}: projected as a list but cddl2ts is not an array (${alias.slice(0, 40)})`)
     }
   }
 

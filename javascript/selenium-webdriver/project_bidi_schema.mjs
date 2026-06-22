@@ -77,6 +77,7 @@ const isNullAlt = (e) =>
 function projectRef(type) {
   const all = typeList(type)
   const entries = all.filter((e) => !isNullAlt(e))
+  if (entries.length === 0) return { primitive: 'null', nullable: true } // the type is only `null`
   const node =
     entries.length > 1
       ? entries.every(isLiteral)
@@ -90,21 +91,51 @@ function projectRef(type) {
 function projectEntry(e) {
   if (typeof e === 'string') return { primitive: PRIMITIVES[e] ?? e }
   if (!e || typeof e !== 'object') return { primitive: 'unknown' }
+  // A control operator (`.ge` / `.default` / `.le` …) wraps the real type as
+  // `{ Type: <innerType>, Operator: {...} }`; the constraint does not change the
+  // type, so project the inner type.
+  if (e.Type && typeof e.Type === 'object') return projectEntry(e.Type)
   if (e.Type === 'literal') return { const: e.Value }
   if (e.Type === 'group' && e.Value) return e.Value in PRELUDE ? { primitive: PRELUDE[e.Value] } : { ref: e.Value }
-  if (e.Type === 'group' && Array.isArray(e.Properties))
+  if (e.Type === 'group' && Array.isArray(e.Properties)) {
+    // An inline group that only wraps anonymous ref(s) — e.g. a union arm
+    // `{ DateLocalValue }` — is that ref (or a union of them), not a record.
+    const refs = unionMemberRefs(e)
+    if (refs) return refs.length === 1 ? { ref: refs[0] } : { union: refs.map((r) => ({ ref: r })) }
     return {
       record: e.Properties.flat()
         .filter((p) => p?.Name)
         .map(projectField),
     }
+  }
   if (e.Type === 'array') return { list: projectRef(e.Values?.[0]?.Type) }
   if (e.Type === 'map') return { map: projectRef(e.ValueType ?? e.Values?.[0]?.Type), extensible: true }
+  if (e.Type === 'range') {
+    const intRange = Number.isInteger(e.Value?.Min?.Value) && Number.isInteger(e.Value?.Max?.Value)
+    return { primitive: intRange ? 'integer' : 'number' } // e.g. js-uint (0..MAX) vs scale (0.1..2)
+  }
   return { primitive: PRIMITIVES[e.Type] ?? 'unknown' }
 }
 
 function projectField(prop) {
   return { name: prop.Name, wire: prop.Name, required: (prop.Occurrence?.n ?? 1) >= 1, type: projectRef(prop.Type) }
+}
+
+// A group whose members are all anonymous refs (a top-level `a // b // c`
+// choice, e.g. session.ProxyConfiguration, or a single-member dispatch root
+// like LogEvent) carries those refs, not named fields. Returns the ref names,
+// or null if it is a normal record.
+function unionMemberRefs(def) {
+  const flat = (def.Properties ?? []).flat()
+  if (flat.length < 1) return null
+  const refs = []
+  for (const p of flat) {
+    if (!p || typeof p !== 'object' || p.Name) return null
+    const e = Array.isArray(p.Type) ? p.Type[0] : p.Type
+    if (!e || e.Type !== 'group' || !e.Value) return null
+    refs.push(e.Value)
+  }
+  return refs
 }
 
 function projectType(def) {
@@ -114,7 +145,14 @@ function projectType(def) {
     if (pt.length > 1 && pt.every(isRef)) return { kind: 'union', variants: pt.map((e) => e.Value) }
     return { kind: 'alias', type: projectRef(def.PropertyType) }
   }
-  return projectRecord(def)
+  if (def.Type === 'group') {
+    const refs = unionMemberRefs(def)
+    if (refs) return refs.length === 1 ? { kind: 'alias', type: { ref: refs[0] } } : { kind: 'union', variants: refs }
+    return projectRecord(def)
+  }
+  // Top-level list/map (or any non-group, non-variable def) becomes an alias to
+  // its element type, so the element type is not lost (e.g. script.ListLocalValue).
+  return { kind: 'alias', type: projectEntry(def) }
 }
 
 /**
@@ -169,11 +207,11 @@ export function projectSchema(ast, model) {
 }
 
 /**
- * Fail-closed validation: every type reference in the schema resolves to a
- * defined type — across command/event params and results, record fields, record
- * maps, union variants, and aliases.
+ * Fail-closed validation: every type reference resolves, and no type projects to
+ * `unknown` (which would mean an unhandled CDDL form) — across command/event
+ * params and results, record fields, record maps, union variants, and aliases.
  * @param {object} schema The projected schema (`{commands, events, types}`).
- * @returns {string[]} One message per unresolved reference; empty when valid.
+ * @returns {string[]} One message per problem; empty when valid.
  */
 export function checkSchema(schema) {
   const errors = []
@@ -192,8 +230,36 @@ export function checkSchema(schema) {
               : node.record
                 ? node.record.flatMap((f) => refsIn(f.type))
                 : []
+  const hasUnknown = (node) =>
+    !node
+      ? false
+      : node.primitive === 'unknown'
+        ? true
+        : node.list
+          ? hasUnknown(node.list)
+          : node.map
+            ? hasUnknown(node.map)
+            : node.union
+              ? node.union.some(hasUnknown)
+              : node.record
+                ? node.record.some((f) => hasUnknown(f.type))
+                : false
+  const hasEmptyInlineRecord = (node) =>
+    !node
+      ? false
+      : Array.isArray(node.record)
+        ? node.record.length === 0 || node.record.some((f) => hasEmptyInlineRecord(f.type))
+        : node.list
+          ? hasEmptyInlineRecord(node.list)
+          : node.map
+            ? hasEmptyInlineRecord(node.map)
+            : node.union
+              ? node.union.some(hasEmptyInlineRecord)
+              : false
   const report = (where, node) => {
     for (const r of refsIn(node)) if (!has(r)) errors.push(`${where}: unresolved type ${r}`)
+    if (hasUnknown(node)) errors.push(`${where}: projected to an unknown primitive (unhandled CDDL type)`)
+    if (hasEmptyInlineRecord(node)) errors.push(`${where}: projected an empty inline record (dropped type reference)`)
   }
 
   for (const c of [...schema.commands, ...schema.events]) {

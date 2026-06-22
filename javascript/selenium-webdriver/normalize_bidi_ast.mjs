@@ -352,11 +352,18 @@ export function canonicalizeVariantParams(ast) {
 // ============================================================
 
 // Dispatch-hierarchy defs (the command/event union machinery) are not data
-// records and must not be flattened into.
+// records and must not be flattened into. A command/event leaf is identified by
+// a `method` property whose type is the literal method string (e.g.
+// "log.entryAdded") — not a data field that merely happens to be named `method`
+// (e.g. log.ConsoleLogEntry.method, a plain text field).
 function isDispatchType(def) {
   if (!def) return false
   if (/Command$|Event$/.test(def.Name ?? '')) return true
-  return (def.Properties ?? []).flat().some((p) => p?.Name === 'method')
+  return (def.Properties ?? []).flat().some((p) => {
+    if (p?.Name !== 'method') return false
+    const t = Array.isArray(p.Type) ? p.Type[0] : p.Type
+    return t?.Type === 'literal'
+  })
 }
 
 // A record group carries named fields (no top-level choice branches).
